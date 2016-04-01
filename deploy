@@ -1,0 +1,123 @@
+#!/bin/bash
+#
+# A simple tool for server deployments 
+# Kousha Talebian <kousha.talebain@gmail.com>
+# 
+# 
+TMP_FOLDER_NAME="tmp"
+APP_FOLDER_NAME="application"
+
+# Docker file
+DOCKER_DEV=Dockerfile.dev
+
+# Variables
+DEFAULT_BRANCH=dev
+PROD_SERVER_IP=""
+DEV_SERVER_IP=""
+
+# Repositories
+REPO_URL=""
+REPO_NAME=""
+REPO_BRANCH=${DEFAULT_BRANCH}
+
+# Remote server
+DEST_SERVER_USER="root"
+DEST_SERVER_IP=${DEV_SERVER_IP}
+DEST_SERVER_PATH="~/"
+
+# Directory name
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+TEMP_DIR="${DIR}/$TMP_FOLDER_NAME"
+APPLICATION_DIR="${DIR}/$APP_FOLDER_NAME"
+
+IS_DEV=true
+VERBOSE=false
+MANUAL="
+Deploys the application to the server. Default is development server.
+By default, production deploys 'master', and development deploys 'dev'. Pass an optional argument to set repo name instead
+
+-p|--production     Deploys to production server (default is development)
+-v|--verbose        Verbose
+-h|--help           Manual/help page
+"
+
+deploy() {
+    echo "---------------------------------------------------------------------"
+    echo "[START] Deploying Branch $REPO_BRANCH to $DEST_SERVER_IP"
+    echo "---------------------------------------------------------------------"
+    sleep 2
+
+    # Delete tmp folder and recreate it
+    rm  -rf $TEMP_DIR &> /dev/null
+    mkdir -p $TEMP_DIR &> /dev/null
+
+    # Clone the repo
+    git clone -b "$REPO_BRANCH" --depth 1 $REPO_URL "$TEMP_DIR/$REPO_NAME"
+
+    # If this is the dev push, then update Dockerfile
+    if [ "$IS_DEV" = true ]; then
+        cd $CWD
+        rm ${TEMP_DIR}/${REPO_NAME}/${APP_FOLDER_NAME}/Dockerfile
+        mv ${TEMP_DIR}/${REPO_NAME}/${APP_FOLDER_NAME}/${DOCKER_DEV} ${TEMP_DIR}/${REPO_NAME}/${APP_FOLDER_NAME}/Dockerfile
+    else
+        rm ${TEMP_DIR}/${REPO_NAME}/${APP_FOLDER_NAME}/${DOCKER_DEV}
+    fi
+
+    # Now delete the folder from the server
+    ssh ${DEST_SERVER_USER}@${DEST_SERVER_IP} "rm -r ${DEST_SERVER_PATH}/${REPO_NAME} &> /dev/null"
+
+    # Now deploy to server
+    rsync -avz "$TEMP_DIR/$REPO_NAME" $DEST_SERVER_USER@$DEST_SERVER_IP:$DEST_SERVER_PATH
+
+    # Now build application
+    ssh ${DEST_SERVER_USER}@${DEST_SERVER_IP} "cd ${DEST_SERVER_PATH}/${REPO_NAME} && sudo docker-compose build application"
+
+    # Now bring up the new builds
+    ssh ${DEST_SERVER_USER}@${DEST_SERVER_IP} "cd ${DEST_SERVER_PATH}/${REPO_NAME} && sudo docker-compose up -d"
+
+    # Remove tmp folder
+    rm  -rf $TEMP_DIR &> /dev/null
+}
+
+# Flags and options
+# Transform long options to short ones
+for arg in "$@"; do
+  shift
+  case "$arg" in
+    "--help")       set -- "$@" "-h" ;;
+    "--verbose")    set -- "$@" "-v" ;;
+    "--production") set -- "$@" "-p" ;;
+    *)              set -- "$@" "$arg"
+  esac
+done
+
+# Apply flags
+while getopts "vph" option; do
+    case "${option}" in
+        h)
+            printf '%s\n' "$MANUAL"
+            exit 0
+            ;;
+        v)
+            VERBOSE=true
+            ;;
+        p)
+            REPO_BRANCH=master
+            IS_DEV=false
+            DEST_SERVER_IP=${PROD_SERVER_IP}
+            ;;
+        *)
+            echo "Invalid use of options. Use --help for more information"
+            exit 1
+    esac
+done
+shift $((OPTIND-1))
+
+# Update branch if provided
+if [ ! -z "$1" ]; then
+    REPO_BRANCH="$1"
+fi
+
+deploy
+
+exit 0
